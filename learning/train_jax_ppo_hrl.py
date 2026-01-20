@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-"""Train a PPO agent using JAX on the specified environment."""
+"""Train a PPO-HRL agent using JAX on the specified environment."""
 
 import datetime
 import functools
@@ -24,9 +24,8 @@ import warnings
 from absl import app
 from absl import flags
 from absl import logging
-from brax.training.agents.ppo import networks as ppo_networks
-from brax.training.agents.ppo import networks_vision as ppo_networks_vision
-from brax.training.agents.ppo import train as ppo
+from brax.training.agents.ppo_hrl import networks as ppo_hrl_networks
+from brax.training.agents.ppo_hrl import train as ppo_hrl
 from etils import epath
 import jax
 import jax.numpy as jp
@@ -77,7 +76,6 @@ _PLAYGROUND_CONFIG_OVERRIDES = flags.DEFINE_string(
     None,
     "Overrides for the playground env config.",
 )
-_VISION = flags.DEFINE_boolean("vision", False, "Use vision input")
 _LOAD_CHECKPOINT_PATH = flags.DEFINE_string(
     "load_checkpoint_path", None, "Path to load checkpoint from"
 )
@@ -171,19 +169,28 @@ _TRAINING_METRICS_STEPS = flags.DEFINE_integer(
     " experiences slowdown.",
 )
 
+# HRL-specific flags
+_HINT_NVEC = flags.DEFINE_string(
+    "hint_nvec", "5,5", "Hint space dimensions (comma-separated)"
+)
+_HIGH_ENTROPY_COST = flags.DEFINE_float(
+    "high_entropy_cost", 1e-4, "Entropy cost for high-level policy"
+)
+_MI_LOW_COEF = flags.DEFINE_float(
+    "mi_low_coef", 0.1, "MI regularization for low-level policy"
+)
+_MI_HIGH_COEF = flags.DEFINE_float(
+    "mi_high_coef", 0.1, "MI regularization for high-level policy"
+)
+
 
 def get_rl_config(env_name: str) -> config_dict.ConfigDict:
+  # PPO-HRL does not support vision mode, so we only use the state-based configs
   if env_name in mujoco_playground.manipulation._envs:
-    if _VISION.value:
-      return manipulation_params.brax_vision_ppo_config(env_name, _IMPL.value)
     return manipulation_params.brax_ppo_config(env_name, _IMPL.value)
   elif env_name in mujoco_playground.locomotion._envs:
     return locomotion_params.brax_ppo_config(env_name, _IMPL.value)
   elif env_name in mujoco_playground.dm_control_suite._envs:
-    if _VISION.value:
-      return dm_control_suite_params.brax_vision_ppo_config(
-          env_name, _IMPL.value
-      )
     return dm_control_suite_params.brax_ppo_config(env_name, _IMPL.value)
 
   raise ValueError(f"Env {env_name} not found in {registry.ALL_ENVS}.")
@@ -266,9 +273,7 @@ def main(argv):
     ppo_params.network_factory.policy_obs_key = _POLICY_OBS_KEY.value
   if _VALUE_OBS_KEY.present:
     ppo_params.network_factory.value_obs_key = _VALUE_OBS_KEY.value
-  if _VISION.value:
-    env_cfg.vision = True
-    env_cfg.vision_config.render_batch_size = ppo_params.num_envs
+
   env_cfg_overrides = {}
   if _PLAYGROUND_CONFIG_OVERRIDES.value is not None:
     env_cfg_overrides = json.loads(_PLAYGROUND_CONFIG_OVERRIDES.value)
@@ -282,15 +287,21 @@ def main(argv):
   if _TRAINING_METRICS_STEPS.present:
     ppo_params.training_metrics_steps = _TRAINING_METRICS_STEPS.value
 
+  # Parse HRL-specific params
+  hint_nvec = tuple(int(x) for x in _HINT_NVEC.value.split(","))
+
   print(f"Environment Config:\n{env_cfg}")
   if env_cfg_overrides:
     print(f"Environment Config Overrides:\n{env_cfg_overrides}\n")
   print(f"PPO Training Parameters:\n{ppo_params}")
+  print(f"HRL Parameters: hint_nvec={hint_nvec}, high_entropy_cost="
+        f"{_HIGH_ENTROPY_COST.value}, mi_low_coef={_MI_LOW_COEF.value}, "
+        f"mi_high_coef={_MI_HIGH_COEF.value}")
 
   # Generate unique experiment name
   now = datetime.datetime.now()
   timestamp = now.strftime("%Y%m%d-%H%M%S")
-  exp_name = f"{_ENV_NAME.value}-{timestamp}"
+  exp_name = f"{_ENV_NAME.value}-ppo_hrl-{timestamp}"
   if _SUFFIX.value is not None:
     exp_name += f"-{_SUFFIX.value}"
   print(f"Experiment name: {exp_name}")
@@ -307,9 +318,15 @@ def main(argv):
           "wandb is required for --use_wandb. "
           "Install via: pip install wandb"
       )
-    wandb.init(project="mjxrl", name=exp_name)
+    wandb.init(project="mjxrl-hrl", name=exp_name)
     wandb.config.update(env_cfg.to_dict())
-    wandb.config.update({"env_name": _ENV_NAME.value})
+    wandb.config.update({
+        "env_name": _ENV_NAME.value,
+        "hint_nvec": hint_nvec,
+        "high_entropy_cost": _HIGH_ENTROPY_COST.value,
+        "mi_low_coef": _MI_LOW_COEF.value,
+        "mi_high_coef": _MI_HIGH_COEF.value,
+    })
 
   # Initialize TensorBoard if required
   if _USE_TB.value and not _PLAY_ONLY.value:
@@ -346,51 +363,41 @@ def main(argv):
   if "network_factory" in training_params:
     del training_params["network_factory"]
 
-  network_fn = (
-      ppo_networks_vision.make_ppo_networks_vision
-      if _VISION.value
-      else ppo_networks.make_ppo_networks
-  )
+  # Use PPO-HRL network factory
+  network_fn = ppo_hrl_networks.make_ppo_hrl_networks
   if hasattr(ppo_params, "network_factory"):
     network_factory = functools.partial(
-        network_fn, **ppo_params.network_factory
+        network_fn,
+        hint_nvec=hint_nvec,
+        **ppo_params.network_factory
     )
   else:
-    network_factory = network_fn
+    network_factory = functools.partial(network_fn, hint_nvec=hint_nvec)
 
   if _DOMAIN_RANDOMIZATION.value:
     training_params["randomization_fn"] = registry.get_domain_randomizer(
         _ENV_NAME.value
     )
 
-  if _VISION.value:
-    env = wrapper.wrap_for_brax_training(
-        env,
-        vision=True,
-        num_vision_envs=env_cfg.vision_config.render_batch_size,
-        episode_length=ppo_params.episode_length,
-        action_repeat=ppo_params.action_repeat,
-        randomization_fn=training_params.get("randomization_fn"),
-    )
-
-  num_eval_envs = (
-      ppo_params.num_envs
-      if _VISION.value
-      else ppo_params.get("num_eval_envs", 128)
-  )
+  num_eval_envs = ppo_params.get("num_eval_envs", 128)
 
   if "num_eval_envs" in training_params:
     del training_params["num_eval_envs"]
 
   train_fn = functools.partial(
-      ppo.train,
+      ppo_hrl.train,
       **training_params,
       network_factory=network_factory,
       seed=_SEED.value,
       restore_checkpoint_path=restore_checkpoint_path,
       save_checkpoint_path=ckpt_path,
-      wrap_env_fn=None if _VISION.value else wrapper.wrap_for_brax_training,
+      wrap_env_fn=wrapper.wrap_for_brax_training,
       num_eval_envs=num_eval_envs,
+      # HRL-specific params
+      hint_nvec=hint_nvec,
+      high_entropy_cost=_HIGH_ENTROPY_COST.value,
+      mi_low_coef=_MI_LOW_COEF.value,
+      mi_high_coef=_MI_HIGH_COEF.value,
   )
 
   times = [time.monotonic()]
@@ -419,46 +426,16 @@ def main(argv):
         )
 
   # Load evaluation environment.
-  eval_env = None
-  if not _VISION.value:
-    eval_env = registry.load(
-        _ENV_NAME.value, config=env_cfg, config_overrides=env_cfg_overrides
-    )
+  eval_env = registry.load(
+      _ENV_NAME.value, config=env_cfg, config_overrides=env_cfg_overrides
+  )
   num_envs = 1
-  if _VISION.value:
-    num_envs = env_cfg.vision_config.render_batch_size
 
   policy_params_fn = lambda *args: None
   if _RSCOPE_ENVS.value:
     # Interactive visualisation of policy checkpoints
-    from rscope import brax as rscope_utils
-
-    if not _VISION.value:
-      rscope_env = registry.load(
-          _ENV_NAME.value, config=env_cfg, config_overrides=env_cfg_overrides
-      )
-      rscope_env = wrapper.wrap_for_brax_training(
-          rscope_env,
-          episode_length=ppo_params.episode_length,
-          action_repeat=ppo_params.action_repeat,
-          randomization_fn=training_params.get("randomization_fn"),
-      )
-    else:
-      rscope_env = env
-
-    rscope_handle = rscope_utils.BraxRolloutSaver(
-        rscope_env,
-        ppo_params,
-        _VISION.value,
-        _RSCOPE_ENVS.value,
-        _DETERMINISTIC_RSCOPE.value,
-        jax.random.PRNGKey(_SEED.value),
-        rscope_fn,
-    )
-
-    def policy_params_fn(current_step, make_policy, params):  # pylint: disable=unused-argument
-      rscope_handle.set_make_policy(make_policy)
-      rscope_handle.dump_rollout(params)
+    # Note: rscope integration for HRL may need custom handling
+    print("Warning: rscope integration may have limited support for PPO-HRL")
 
   # Train or load the model
   make_inference_fn, params, _ = train_fn(  # pylint: disable=no-value-for-parameter
@@ -476,6 +453,7 @@ def main(argv):
   print("Starting inference...")
 
   # Create inference function.
+  # PPO-HRL inference requires prev_hints argument
   inference_fn = make_inference_fn(params, deterministic=True)
   jit_inference_fn = jax.jit(inference_fn)
 
@@ -487,11 +465,26 @@ def main(argv):
     empty_traj = state.__class__(**{k: None for k in state.__annotations__})  # pytype: disable=attribute-error
     empty_traj = empty_traj.replace(data=empty_data)
 
+    # Initialize prev_hints for HRL
+    prev_hints = jp.zeros((len(hint_nvec),), dtype=jp.int32)
+
     def step(carry, _):
-      state, rng = carry
+      state, prev_hints, rng = carry
       rng, act_key = jax.random.split(rng)
-      act = jit_inference_fn(state.obs, act_key)[0]
+
+      # HRL inference takes (obs, prev_hints, key) and returns (action, extras)
+      if isinstance(state.obs, dict):
+        obs = state.obs['state']
+      else:
+        obs = state.obs
+      act, extras = jit_inference_fn(obs, prev_hints, act_key)
+
       state = eval_env.step(state, act)
+
+      # Update prev_hints from the policy output, reset on done
+      new_hints = extras['hint']
+      new_hints = jp.where(state.done, jp.zeros_like(new_hints), new_hints)
+
       traj_data = empty_traj.tree_replace({
           "data.qpos": state.data.qpos,
           "data.qvel": state.data.qvel,
@@ -501,19 +494,15 @@ def main(argv):
           "data.mocap_quat": state.data.mocap_quat,
           "data.xfrc_applied": state.data.xfrc_applied,
       })
-      if _VISION.value:
-        traj_data = jax.tree_util.tree_map(lambda x: x[0], traj_data)
-      return (state, rng), traj_data
+      return (state, new_hints, rng), traj_data
 
     _, traj = jax.lax.scan(
-        step, (state, rng), None, length=_EPISODE_LENGTH.value
+        step, (state, prev_hints, rng), None, length=_EPISODE_LENGTH.value
     )
     return traj
 
   rng = jax.random.split(jax.random.PRNGKey(_SEED.value), _NUM_VIDEOS.value)
   reset_states = jax.jit(jax.vmap(eval_env.reset))(rng)
-  if _VISION.value:
-    reset_states = jax.tree_util.tree_map(lambda x: x[0], reset_states)
   traj_stacked = jax.jit(jax.vmap(do_rollout))(rng, reset_states)
   trajectories = [None] * _NUM_VIDEOS.value
   for i in range(_NUM_VIDEOS.value):
