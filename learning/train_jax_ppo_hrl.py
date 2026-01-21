@@ -182,6 +182,12 @@ _MI_LOW_COEF = flags.DEFINE_float(
 _MI_HIGH_COEF = flags.DEFINE_float(
     "mi_high_coef", 0.1, "MI regularization for high-level policy"
 )
+_CONSTANT_HINTS = flags.DEFINE_boolean(
+    "constant_hints",
+    False,
+    "Use constant zero hints (bypass high policy). Useful for debugging - "
+    "makes low policy equivalent to standard PPO with constant input appended.",
+)
 
 
 def get_rl_config(env_name: str) -> config_dict.ConfigDict:
@@ -297,6 +303,10 @@ def main(argv):
   print(f"HRL Parameters: hint_nvec={hint_nvec}, high_entropy_cost="
         f"{_HIGH_ENTROPY_COST.value}, mi_low_coef={_MI_LOW_COEF.value}, "
         f"mi_high_coef={_MI_HIGH_COEF.value}")
+  if _CONSTANT_HINTS.value:
+    print("\n*** CONSTANT_HINTS MODE ENABLED ***")
+    print("High policy is bypassed - using constant zero hints.")
+    print("Low policy should behave like standard PPO with constant input appended.\n")
 
   # Generate unique experiment name
   now = datetime.datetime.now()
@@ -398,6 +408,7 @@ def main(argv):
       high_entropy_cost=_HIGH_ENTROPY_COST.value,
       mi_low_coef=_MI_LOW_COEF.value,
       mi_high_coef=_MI_HIGH_COEF.value,
+      constant_hints=_CONSTANT_HINTS.value,
   )
 
   times = [time.monotonic()]
@@ -415,15 +426,33 @@ def main(argv):
       for key, value in metrics.items():
         writer.add_scalar(key, value, num_steps)
       writer.flush()
-    if _RUN_EVALS.value:
-      sps = metrics.get('training/sps', 0)
-      print(f"{num_steps}: reward={metrics['eval/episode_reward']:.3f}, sps={sps:.0f}")
-    if _LOG_TRAINING_METRICS.value:
-      if "episode/sum_reward" in metrics:
-        print(
-            f"{num_steps}: mean episode"
-            f" reward={metrics['episode/sum_reward']:.3f}"
-        )
+
+    # Print all metrics in YAML-style format
+    print(f"\n{'='*60}")
+    print(f"step: {num_steps}")
+    print(f"{'='*60}")
+
+    # Group metrics by prefix for cleaner output
+    grouped = {}
+    for key, value in sorted(metrics.items()):
+      parts = key.split('/')
+      if len(parts) > 1:
+        group = parts[0]
+        subkey = '/'.join(parts[1:])
+      else:
+        group = 'misc'
+        subkey = key
+      if group not in grouped:
+        grouped[group] = {}
+      grouped[group][subkey] = value
+
+    for group, group_metrics in sorted(grouped.items()):
+      print(f"{group}:")
+      for key, value in sorted(group_metrics.items()):
+        if isinstance(value, float):
+          print(f"  {key}: {value:.6f}")
+        else:
+          print(f"  {key}: {value}")
 
   # Load evaluation environment.
   eval_env = registry.load(
