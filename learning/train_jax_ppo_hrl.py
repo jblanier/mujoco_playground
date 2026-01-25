@@ -88,6 +88,11 @@ _USE_WANDB = flags.DEFINE_boolean(
     False,
     "Use Weights & Biases for logging (ignored in play-only mode)",
 )
+_WANDB_PROJECT = flags.DEFINE_string(
+    "wandb_project",
+    "mjxrl",
+    "Weights & Biases project name",
+)
 _USE_TB = flags.DEFINE_boolean(
     "use_tb", False, "Use TensorBoard for logging (ignored in play-only mode)"
 )
@@ -171,7 +176,7 @@ _TRAINING_METRICS_STEPS = flags.DEFINE_integer(
 
 # HRL-specific flags
 _HINT_NVEC = flags.DEFINE_string(
-    "hint_nvec", "5,5", "Hint space dimensions (comma-separated)"
+    "hint_nvec", "5,5", "Hint space dimensions (comma-separated, categorical only)"
 )
 _HIGH_ENTROPY_COST = flags.DEFINE_float(
     "high_entropy_cost", 1e-4, "Entropy cost for high-level policy"
@@ -182,11 +187,34 @@ _MI_LOW_COEF = flags.DEFINE_float(
 _MI_HIGH_COEF = flags.DEFINE_float(
     "mi_high_coef", 0.1, "MI regularization for high-level policy"
 )
-_CONSTANT_HINTS = flags.DEFINE_boolean(
-    "constant_hints",
+_DEBUG_CONSTANT_HINTS = flags.DEFINE_boolean(
+    "debug_constant_hints",
     False,
     "Use constant zero hints (bypass high policy). Useful for debugging - "
     "makes low policy equivalent to standard PPO with constant input appended.",
+)
+_DEBUG_PASSTHROUGH_LOW_AGENT = flags.DEFINE_boolean(
+    "debug_passthrough_low_agent",
+    False,
+    "Low policy passes hints through as actions. Auto-enables continuous hints "
+    "with hint_dim=action_size. Useful for testing high policy in isolation.",
+)
+_CONTINUOUS_HINTS = flags.DEFINE_boolean(
+    "continuous_hints",
+    False,
+    "Use continuous hints (NormalTanhDistribution) instead of categorical "
+    "(MultiCategoricalDistribution).",
+)
+_CONTINUOUS_HINT_DIM = flags.DEFINE_integer(
+    "continuous_hint_dim",
+    None,
+    "Dimension of continuous hint space. Required if continuous_hints=True "
+    "and not using debug_passthrough_low_agent.",
+)
+_CONTINUOUS_HINT_INIT_SCALE = flags.DEFINE_float(
+    "continuous_hint_init_scale",
+    1.0,
+    "Initial std scale for continuous hint distribution.",
 )
 
 
@@ -303,10 +331,16 @@ def main(argv):
   print(f"HRL Parameters: hint_nvec={hint_nvec}, high_entropy_cost="
         f"{_HIGH_ENTROPY_COST.value}, mi_low_coef={_MI_LOW_COEF.value}, "
         f"mi_high_coef={_MI_HIGH_COEF.value}")
-  if _CONSTANT_HINTS.value:
-    print("\n*** CONSTANT_HINTS MODE ENABLED ***")
+  print(f"Continuous hints: {_CONTINUOUS_HINTS.value}, dim={_CONTINUOUS_HINT_DIM.value}, "
+        f"init_scale={_CONTINUOUS_HINT_INIT_SCALE.value}")
+  if _DEBUG_CONSTANT_HINTS.value:
+    print("\n*** DEBUG_CONSTANT_HINTS MODE ENABLED ***")
     print("High policy is bypassed - using constant zero hints.")
     print("Low policy should behave like standard PPO with constant input appended.\n")
+  if _DEBUG_PASSTHROUGH_LOW_AGENT.value:
+    print("\n*** DEBUG_PASSTHROUGH_LOW_AGENT MODE ENABLED ***")
+    print("Low policy passes hints through as actions.")
+    print("High policy learns in isolation - should match standard PPO performance.\n")
 
   # Generate unique experiment name
   now = datetime.datetime.now()
@@ -328,7 +362,7 @@ def main(argv):
           "wandb is required for --use_wandb. "
           "Install via: pip install wandb"
       )
-    wandb.init(project="mjxrl-hrl", name=exp_name)
+    wandb.init(project=_WANDB_PROJECT.value, name=exp_name)
     wandb.config.update(env_cfg.to_dict())
     wandb.config.update({
         "env_name": _ENV_NAME.value,
@@ -336,6 +370,11 @@ def main(argv):
         "high_entropy_cost": _HIGH_ENTROPY_COST.value,
         "mi_low_coef": _MI_LOW_COEF.value,
         "mi_high_coef": _MI_HIGH_COEF.value,
+        "debug_constant_hints": _DEBUG_CONSTANT_HINTS.value,
+        "debug_passthrough_low_agent": _DEBUG_PASSTHROUGH_LOW_AGENT.value,
+        "continuous_hints": _CONTINUOUS_HINTS.value,
+        "continuous_hint_dim": _CONTINUOUS_HINT_DIM.value,
+        "continuous_hint_init_scale": _CONTINUOUS_HINT_INIT_SCALE.value,
     })
 
   # Initialize TensorBoard if required
@@ -375,14 +414,21 @@ def main(argv):
 
   # Use PPO-HRL network factory
   network_fn = ppo_hrl_networks.make_ppo_hrl_networks
+  network_kwargs = {
+      "hint_nvec": hint_nvec,
+      "continuous_hints": _CONTINUOUS_HINTS.value,
+      "continuous_hint_dim": _CONTINUOUS_HINT_DIM.value,
+      "continuous_hint_init_scale": _CONTINUOUS_HINT_INIT_SCALE.value,
+      "debug_passthrough_low_agent": _DEBUG_PASSTHROUGH_LOW_AGENT.value,
+  }
   if hasattr(ppo_params, "network_factory"):
     network_factory = functools.partial(
         network_fn,
-        hint_nvec=hint_nvec,
+        **network_kwargs,
         **ppo_params.network_factory
     )
   else:
-    network_factory = functools.partial(network_fn, hint_nvec=hint_nvec)
+    network_factory = functools.partial(network_fn, **network_kwargs)
 
   if _DOMAIN_RANDOMIZATION.value:
     training_params["randomization_fn"] = registry.get_domain_randomizer(
@@ -408,7 +454,13 @@ def main(argv):
       high_entropy_cost=_HIGH_ENTROPY_COST.value,
       mi_low_coef=_MI_LOW_COEF.value,
       mi_high_coef=_MI_HIGH_COEF.value,
-      constant_hints=_CONSTANT_HINTS.value,
+      # Debug modes
+      debug_constant_hints=_DEBUG_CONSTANT_HINTS.value,
+      debug_passthrough_low_agent=_DEBUG_PASSTHROUGH_LOW_AGENT.value,
+      # Continuous hints
+      continuous_hints=_CONTINUOUS_HINTS.value,
+      continuous_hint_dim=_CONTINUOUS_HINT_DIM.value,
+      continuous_hint_init_scale=_CONTINUOUS_HINT_INIT_SCALE.value,
   )
 
   times = [time.monotonic()]
@@ -432,7 +484,7 @@ def main(argv):
     print(f"step: {num_steps}")
     print(f"{'='*60}")
 
-    # Group metrics by prefix for cleaner output
+    # Group metrics by prefix for cleaner outputno
     grouped = {}
     for key, value in sorted(metrics.items()):
       parts = key.split('/')
@@ -486,6 +538,19 @@ def main(argv):
   inference_fn = make_inference_fn(params, deterministic=True)
   jit_inference_fn = jax.jit(inference_fn)
 
+  # Determine hint configuration for rollouts
+  # (mirrors logic in train.py and networks.py)
+  rollout_continuous_hints = _CONTINUOUS_HINTS.value or _DEBUG_PASSTHROUGH_LOW_AGENT.value
+  if rollout_continuous_hints:
+    if _DEBUG_PASSTHROUGH_LOW_AGENT.value:
+      rollout_hint_dim = eval_env.action_size
+    else:
+      rollout_hint_dim = _CONTINUOUS_HINT_DIM.value
+    rollout_hint_dtype = jp.float32
+  else:
+    rollout_hint_dim = len(hint_nvec)
+    rollout_hint_dtype = jp.int32
+
   # Run evaluation rollouts.
   def do_rollout(rng, state):
     empty_data = state.data.__class__(
@@ -494,8 +559,8 @@ def main(argv):
     empty_traj = state.__class__(**{k: None for k in state.__annotations__})  # pytype: disable=attribute-error
     empty_traj = empty_traj.replace(data=empty_data)
 
-    # Initialize prev_hints for HRL
-    prev_hints = jp.zeros((len(hint_nvec),), dtype=jp.int32)
+    # Initialize prev_hints for HRL (dtype depends on continuous vs categorical)
+    prev_hints = jp.zeros((rollout_hint_dim,), dtype=rollout_hint_dtype)
 
     def step(carry, _):
       state, prev_hints, rng = carry

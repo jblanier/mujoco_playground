@@ -24,7 +24,7 @@ classifiers = [
 ]
 dependencies = [
     "absl-py",
-    "brax>=0.12.5",
+#    "brax>=0.12.5",
     "etils",
     "flax",
     "jax",
@@ -97,6 +97,7 @@ packages = ["mujoco_playground", "learning"]
 
 [project.scripts]
 train-jax-ppo = "learning.train_jax_ppo:run"
+train-jax-ppo-hrl = "learning.train_jax_ppo_hrl:run"
 train-rsl-ppo = "learning.train_rsl_rl:run"
 
 [tool.ruff]

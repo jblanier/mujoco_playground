@@ -90,6 +90,11 @@ _USE_WANDB = flags.DEFINE_boolean(
     False,
     "Use Weights & Biases for logging (ignored in play-only mode)",
 )
+_WANDB_PROJECT = flags.DEFINE_string(
+    "wandb_project",
+    "mjxrl",
+    "Weights & Biases project name",
+)
 _USE_TB = flags.DEFINE_boolean(
     "use_tb", False, "Use TensorBoard for logging (ignored in play-only mode)"
 )
@@ -307,7 +312,7 @@ def main(argv):
           "wandb is required for --use_wandb. "
           "Install via: pip install wandb"
       )
-    wandb.init(project="mjxrl", name=exp_name)
+    wandb.init(project=_WANDB_PROJECT.value, name=exp_name)
     wandb.config.update(env_cfg.to_dict())
     wandb.config.update({"env_name": _ENV_NAME.value})
 
@@ -411,6 +416,19 @@ def main(argv):
     if _RUN_EVALS.value:
       sps = metrics.get('training/sps', 0)
       print(f"{num_steps}: reward={metrics['eval/episode_reward']:.3f}, sps={sps:.0f}")
+      # Print debug metrics if available
+      if 'training/debug/advantage_mean' in metrics:
+        print(f"  adv_mean={metrics['training/debug/advantage_mean']:.4f}, "
+              f"adv_std={metrics['training/debug/advantage_std']:.4f}, "
+              f"val_mean={metrics['training/debug/value_mean']:.4f}, "
+              f"rho_mean={metrics['training/debug/rho_mean']:.4f}, "
+              f"rho_std={metrics['training/debug/rho_std']:.4f}")
+        print(f"  target_lp={metrics['training/debug/target_logprob_mean']:.4f}, "
+              f"behav_lp={metrics['training/debug/behaviour_logprob_mean']:.4f}, "
+              f"reward={metrics['training/debug/reward_mean']:.4f}")
+        print(f"  policy_loss={metrics['training/policy_loss']:.6f}, "
+              f"v_loss={metrics['training/v_loss']:.6f}, "
+              f"entropy_loss={metrics['training/entropy_loss']:.6f}")
     if _LOG_TRAINING_METRICS.value:
       if "episode/sum_reward" in metrics:
         print(
