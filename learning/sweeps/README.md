@@ -8,10 +8,11 @@ Reproduce the conda environment on other machines:
 
 ```bash
 conda env create -f environment.yaml
+conda activate brax
 cd <brax repo>
 pip install -e .
-cd <playground repo>
-pip install -e .
+cd <mujoco playground repo>
+pip install -e ".[all]"                                                                                                      
 ```
 
 ## Available Environments
