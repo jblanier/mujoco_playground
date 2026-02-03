@@ -1,0 +1,69 @@
+program: train_jax_ppo_hrl.py
+method: bayes
+metric:
+  name: eval/episode_reward
+  goal: maximize
+
+parameters:
+  wandb_project:
+    value: mjxrl-sweep
+  env_name:
+    value: CartpoleBalance
+  num_timesteps:
+    value: 100000000
+
+  # === PPO Parameters ===
+  learning_rate:
+    distribution: log_uniform_values
+    min: 1e-4
+    max: 1e-2
+  entropy_cost:
+    distribution: log_uniform_values
+    min: 1e-4
+    max: 1e-1
+  unroll_length:
+    values: [10, 20, 30, 50]
+  num_minibatches:
+    values: [16, 32, 64]
+  num_updates_per_batch:
+    values: [4, 8, 16, 32]
+  discounting:
+    values: [0.99, 0.995, 0.999]
+  clipping_epsilon:
+    values: [0.05, 0.1, 0.2, 0.3]
+
+  # === HRL Parameters (Discrete Hints) ===
+  hint_nvec:
+    values: ["2,2", "3,3", "5,5", "4,4", "8,8"]
+  high_entropy_cost:
+    distribution: log_uniform_values
+    min: 1e-5
+    max: 1e-1
+  mi_low_coef:
+    distribution: log_uniform_values
+    min: 0.01
+    max: 1.0
+  mi_high_coef:
+    distribution: log_uniform_values
+    min: 0.01
+    max: 1.0
+
+command:
+  - ${env}
+  - python
+  - ${program}
+  - --env_name=${env_name}
+  - --learning_rate=${learning_rate}
+  - --entropy_cost=${entropy_cost}
+  - --num_timesteps=${num_timesteps}
+  - --unroll_length=${unroll_length}
+  - --num_minibatches=${num_minibatches}
+  - --num_updates_per_batch=${num_updates_per_batch}
+  - --discounting=${discounting}
+  - --clipping_epsilon=${clipping_epsilon}
+  - --hint_nvec=${hint_nvec}
+  - --high_entropy_cost=${high_entropy_cost}
+  - --mi_low_coef=${mi_low_coef}
+  - --mi_high_coef=${mi_high_coef}
+  - --use_wandb
+  - --wandb_project=${wandb_project}
