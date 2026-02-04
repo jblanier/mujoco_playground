@@ -446,7 +446,8 @@ def main(argv):
       network_factory=network_factory,
       seed=_SEED.value,
       restore_checkpoint_path=restore_checkpoint_path,
-      save_checkpoint_path=ckpt_path,
+      save_checkpoint_path=None,
+      # save_checkpoint_path=ckpt_path,
       wrap_env_fn=wrapper.wrap_for_brax_training,
       num_eval_envs=num_eval_envs,
       # HRL-specific params
@@ -531,97 +532,97 @@ def main(argv):
     print(f"Time to JIT compile: {times[1] - times[0]}")
     print(f"Time to train: {times[-1] - times[1]}")
 
-  print("Starting inference...")
-
-  # Create inference function.
-  # PPO-HRL inference requires prev_hints argument
-  inference_fn = make_inference_fn(params, deterministic=True)
-  jit_inference_fn = jax.jit(inference_fn)
-
-  # Determine hint configuration for rollouts
-  # (mirrors logic in train.py and networks.py)
-  rollout_continuous_hints = _CONTINUOUS_HINTS.value or _DEBUG_PASSTHROUGH_LOW_AGENT.value
-  if rollout_continuous_hints:
-    if _DEBUG_PASSTHROUGH_LOW_AGENT.value:
-      rollout_hint_dim = eval_env.action_size
-    else:
-      rollout_hint_dim = _CONTINUOUS_HINT_DIM.value
-    rollout_hint_dtype = jp.float32
-  else:
-    rollout_hint_dim = len(hint_nvec)
-    rollout_hint_dtype = jp.int32
-
-  # Run evaluation rollouts.
-  def do_rollout(rng, state):
-    empty_data = state.data.__class__(
-        **{k: None for k in state.data.__annotations__}
-    )  # pytype: disable=attribute-error
-    empty_traj = state.__class__(**{k: None for k in state.__annotations__})  # pytype: disable=attribute-error
-    empty_traj = empty_traj.replace(data=empty_data)
-
-    # Initialize prev_hints for HRL (dtype depends on continuous vs categorical)
-    prev_hints = jp.zeros((rollout_hint_dim,), dtype=rollout_hint_dtype)
-
-    def step(carry, _):
-      state, prev_hints, rng = carry
-      rng, act_key = jax.random.split(rng)
-
-      # HRL inference takes (obs, prev_hints, key) and returns (action, extras)
-      if isinstance(state.obs, dict):
-        obs = state.obs['state']
-      else:
-        obs = state.obs
-      act, extras = jit_inference_fn(obs, prev_hints, act_key)
-
-      state = eval_env.step(state, act)
-
-      # Update prev_hints from the policy output, reset on done
-      new_hints = extras['hint']
-      new_hints = jp.where(state.done, jp.zeros_like(new_hints), new_hints)
-
-      traj_data = empty_traj.tree_replace({
-          "data.qpos": state.data.qpos,
-          "data.qvel": state.data.qvel,
-          "data.time": state.data.time,
-          "data.ctrl": state.data.ctrl,
-          "data.mocap_pos": state.data.mocap_pos,
-          "data.mocap_quat": state.data.mocap_quat,
-          "data.xfrc_applied": state.data.xfrc_applied,
-      })
-      return (state, new_hints, rng), traj_data
-
-    _, traj = jax.lax.scan(
-        step, (state, prev_hints, rng), None, length=_EPISODE_LENGTH.value
-    )
-    return traj
-
-  rng = jax.random.split(jax.random.PRNGKey(_SEED.value), _NUM_VIDEOS.value)
-  reset_states = jax.jit(jax.vmap(eval_env.reset))(rng)
-  traj_stacked = jax.jit(jax.vmap(do_rollout))(rng, reset_states)
-  trajectories = [None] * _NUM_VIDEOS.value
-  for i in range(_NUM_VIDEOS.value):
-    t = jax.tree.map(lambda x, i=i: x[i], traj_stacked)
-    trajectories[i] = [
-        jax.tree.map(lambda x, j=j: x[j], t)
-        for j in range(_EPISODE_LENGTH.value)
-    ]
-
-  # Render and save the rollout.
-  render_every = 2
-  fps = 1.0 / eval_env.dt / render_every
-  print(f"FPS for rendering: {fps}")
-  scene_option = mujoco.MjvOption()
-  scene_option.flags[mujoco.mjtVisFlag.mjVIS_TRANSPARENT] = False
-  scene_option.flags[mujoco.mjtVisFlag.mjVIS_PERTFORCE] = False
-  scene_option.flags[mujoco.mjtVisFlag.mjVIS_CONTACTFORCE] = False
-  for i, rollout in enumerate(trajectories):
-    traj = rollout[::render_every]
-    frames = eval_env.render(
-        traj, height=480, width=640, scene_option=scene_option
-    )
-    media.write_video(f"rollout{i}.mp4", frames, fps=fps)
-    print(f"Rollout video saved as 'rollout{i}.mp4'.")
-
+  # print("Starting inference...")
+  #
+  # # Create inference function.
+  # # PPO-HRL inference requires prev_hints argument
+  # inference_fn = make_inference_fn(params, deterministic=True)
+  # jit_inference_fn = jax.jit(inference_fn)
+  #
+  # # Determine hint configuration for rollouts
+  # # (mirrors logic in train.py and networks.py)
+  # rollout_continuous_hints = _CONTINUOUS_HINTS.value or _DEBUG_PASSTHROUGH_LOW_AGENT.value
+  # if rollout_continuous_hints:
+  #   if _DEBUG_PASSTHROUGH_LOW_AGENT.value:
+  #     rollout_hint_dim = eval_env.action_size
+  #   else:
+  #     rollout_hint_dim = _CONTINUOUS_HINT_DIM.value
+  #   rollout_hint_dtype = jp.float32
+  # else:
+  #   rollout_hint_dim = len(hint_nvec)
+  #   rollout_hint_dtype = jp.int32
+  #
+  # # Run evaluation rollouts.
+  # def do_rollout(rng, state):
+  #   empty_data = state.data.__class__(
+  #       **{k: None for k in state.data.__annotations__}
+  #   )  # pytype: disable=attribute-error
+  #   empty_traj = state.__class__(**{k: None for k in state.__annotations__})  # pytype: disable=attribute-error
+  #   empty_traj = empty_traj.replace(data=empty_data)
+  #
+  #   # Initialize prev_hints for HRL (dtype depends on continuous vs categorical)
+  #   prev_hints = jp.zeros((rollout_hint_dim,), dtype=rollout_hint_dtype)
+  #
+  #   def step(carry, _):
+  #     state, prev_hints, rng = carry
+  #     rng, act_key = jax.random.split(rng)
+  #
+  #     # HRL inference takes (obs, prev_hints, key) and returns (action, extras)
+  #     if isinstance(state.obs, dict):
+  #       obs = state.obs['state']
+  #     else:
+  #       obs = state.obs
+  #     act, extras = jit_inference_fn(obs, prev_hints, act_key)
+  #
+  #     state = eval_env.step(state, act)
+  #
+  #     # Update prev_hints from the policy output, reset on done
+  #     new_hints = extras['hint']
+  #     new_hints = jp.where(state.done, jp.zeros_like(new_hints), new_hints)
+  #
+  #     traj_data = empty_traj.tree_replace({
+  #         "data.qpos": state.data.qpos,
+  #         "data.qvel": state.data.qvel,
+  #         "data.time": state.data.time,
+  #         "data.ctrl": state.data.ctrl,
+  #         "data.mocap_pos": state.data.mocap_pos,
+  #         "data.mocap_quat": state.data.mocap_quat,
+  #         "data.xfrc_applied": state.data.xfrc_applied,
+  #     })
+  #     return (state, new_hints, rng), traj_data
+  #
+  #   _, traj = jax.lax.scan(
+  #       step, (state, prev_hints, rng), None, length=_EPISODE_LENGTH.value
+  #   )
+  #   return traj
+  #
+  # rng = jax.random.split(jax.random.PRNGKey(_SEED.value), _NUM_VIDEOS.value)
+  # reset_states = jax.jit(jax.vmap(eval_env.reset))(rng)
+  # traj_stacked = jax.jit(jax.vmap(do_rollout))(rng, reset_states)
+  # trajectories = [None] * _NUM_VIDEOS.value
+  # for i in range(_NUM_VIDEOS.value):
+  #   t = jax.tree.map(lambda x, i=i: x[i], traj_stacked)
+  #   trajectories[i] = [
+  #       jax.tree.map(lambda x, j=j: x[j], t)
+  #       for j in range(_EPISODE_LENGTH.value)
+  #   ]
+  #
+  # # Render and save the rollout.
+  # render_every = 2
+  # fps = 1.0 / eval_env.dt / render_every
+  # print(f"FPS for rendering: {fps}")
+  # scene_option = mujoco.MjvOption()
+  # scene_option.flags[mujoco.mjtVisFlag.mjVIS_TRANSPARENT] = False
+  # scene_option.flags[mujoco.mjtVisFlag.mjVIS_PERTFORCE] = False
+  # scene_option.flags[mujoco.mjtVisFlag.mjVIS_CONTACTFORCE] = False
+  # for i, rollout in enumerate(trajectories):
+  #   traj = rollout[::render_every]
+  #   frames = eval_env.render(
+  #       traj, height=480, width=640, scene_option=scene_option
+  #   )
+  #   media.write_video(f"rollout{i}.mp4", frames, fps=fps)
+  #   print(f"Rollout video saved as 'rollout{i}.mp4'.")
+  #
 
 def run():
   """Entry point for uv/pip script."""
