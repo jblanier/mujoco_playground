@@ -1,3 +1,4 @@
+name: ppo_cartpole_balance
 program: train_jax_ppo.py
 method: bayes
 metric:
@@ -31,23 +32,12 @@ parameters:
     values: [0.99, 0.995, 0.999]
   clipping_epsilon:
     values: [0.05, 0.1, 0.2, 0.3]
+  max_grad_norm:
+    values: [0.3, 0.5, 1.0, 2.0]
 
 command:
   - ${env}
   - python
   - ${program}
-  - --env_name=${env_name}
-  - --learning_rate=${learning_rate}
-  - --entropy_cost=${entropy_cost}
-  - --num_timesteps=${num_timesteps}
-  - --unroll_length=${unroll_length}
-  - --num_minibatches=${num_minibatches}
-  - --num_updates_per_batch=${num_updates_per_batch}
-  - --discounting=${discounting}
-  - --clipping_epsilon=${clipping_epsilon}
-  - --hint_nvec=${hint_nvec}
-  - --high_entropy_cost=${high_entropy_cost}
-  - --mi_low_coef=${mi_low_coef}
-  - --mi_high_coef=${mi_high_coef}
+  - ${args}
   - --use_wandb
-  - --wandb_project=${wandb_project}

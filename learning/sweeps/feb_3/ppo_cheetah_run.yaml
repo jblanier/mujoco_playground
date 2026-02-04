@@ -1,5 +1,5 @@
-name: ppo_hrl_cartpole_balance
-program: train_jax_ppo_hrl.py
+name: ppo_cheetah_run
+program: train_jax_ppo.py
 method: bayes
 metric:
   name: eval/episode_reward
@@ -9,7 +9,7 @@ parameters:
   wandb_project:
     value: mjxrl-sweep
   env_name:
-    value: CartpoleBalance
+    value: CheetahRun
   num_timesteps:
     value: 100000000
 
@@ -22,33 +22,14 @@ parameters:
     distribution: log_uniform_values
     min: 1e-4
     max: 1e-1
-  unroll_length:
-    values: [10, 20, 30, 50]
   num_minibatches:
     values: [16, 32, 64]
   num_updates_per_batch:
     values: [4, 8, 16, 32]
-  discounting:
-    values: [0.99, 0.995, 0.999]
   clipping_epsilon:
     values: [0.05, 0.1, 0.2, 0.3]
   max_grad_norm:
     values: [0.3, 0.5, 1.0, 2.0]
-  # === HRL Parameters (Discrete Hints) ===
-  hint_nvec:
-    values: ["1,1", "2,2", "3,3", "5,5", "4,4", "8,8"]
-  high_entropy_cost:
-    distribution: log_uniform_values
-    min: 1e-5
-    max: 1e-1
-  mi_low_coef:
-    distribution: log_uniform_values
-    min: 0.01
-    max: 1.0
-  mi_high_coef:
-    distribution: log_uniform_values
-    min: 0.01
-    max: 1.0
 
 command:
   - ${env}

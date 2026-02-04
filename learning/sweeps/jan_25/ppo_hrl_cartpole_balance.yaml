@@ -1,3 +1,4 @@
+name: ppo_hrl_cartpole_balance
 program: train_jax_ppo_hrl.py
 method: bayes
 metric:
